@@ -1,0 +1,7 @@
+# Ignore results directory
+results/
+
+# Ignore logs and tmp files
+logs/
+*.log
+mykrobe/

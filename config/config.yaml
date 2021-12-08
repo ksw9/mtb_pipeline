@@ -1,0 +1,12 @@
+__default__:
+    time: 2:0:0
+    mem: 2G
+    account: "jandr"
+
+taxonomic_filter:
+  mem: 100G
+  
+gatk_call:
+  mem: 100G
+  
+localrules: all, clean, make_archive
