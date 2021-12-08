@@ -6,6 +6,7 @@ Pipeline for M. tuberculosis variant identification from short-read data.
 
 Directory structure
 
+```
 ├── .gitignore
 ├── README.md
 ├── LICENSE.md
@@ -35,3 +36,4 @@ Directory structure
 │   ├── stats
 │   ├── fasta
 └── resources
+```
