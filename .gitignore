@@ -1,7 +1,8 @@
 # Ignore results directory
 results/
 
-# Ignore logs and tmp files
+# Ignore logs and tmp/test files
+test/
 logs/
 *.log
 runs/
