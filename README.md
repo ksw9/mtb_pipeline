@@ -1,8 +1,8 @@
-################################
-#### Mtb bwa/GATK pipeline  ####
-################################
+# Mtb bwa/GATK pipeline 
 
-## December 2021 ##
+Pipeline for M. tuberculosis variant identification from short-read data.
+
+## Scripts included. 
 
 Directory structure
 
