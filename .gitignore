@@ -4,4 +4,7 @@ results/
 # Ignore logs and tmp files
 logs/
 *.log
+runs/
 mykrobe/
+.snakemake/
+.token
