@@ -2,6 +2,7 @@
 #### Mtb bwa/GATK Snakemake ####
 ################################
 import numpy as np
+from collections import defaultdict
 
 # module load anaconda; source activate snakemake
 
@@ -17,9 +18,12 @@ FILTERS = ['qfilt','vqsrfilt']
 
 # Define samples: 
 RUNS, SAMPLES = glob_wildcards("/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R1_001.fastq.gz")
-sample_dict  = dict(zip(SAMPLES,RUNS))
-print("runs are: ", RUNS)
-print("samples are: ", SAMPLES)
+
+# Create sample dictionary so that each sample (key) has list of runs (values) associated with it.
+sample_dict = {}
+for key, val in zip(SAMPLES,RUNS):
+  sample_dict.setdefault(key, []).append(val)
+#print(sample_dict)
 
 # Constrain mapper and filter wildcards. 
 wildcard_constraints: 
@@ -32,42 +36,43 @@ wildcard_constraints:
 # Define a rule for running the complete pipeline. 
 rule all:
   input:
-     trim = expand(['results/trim/{run}_{samp}_trim_1.fq.gz'], zip, run = RUNS, samp = SAMPLES),
-     kraken=expand('results/trim/{run}_{samp}_trim_kr_1.fq.gz', zip, run = RUNS, samp = SAMPLES),
-     bams=expand('results/bams/{run}_{samp}_bwa_{ref}_sorted.bam', zip, run = RUNS, samp = SAMPLES, ref = REFS), # add fixed ref/mapper (expand with zip doesn't allow these to repeat)
+     trim = expand(['results/trim/{run}/{samp}_trim_1.fq.gz'], zip, run = RUNS, samp = SAMPLES),
+     kraken=expand('results/trim/{run}/{samp}_trim_kr_1.fq.gz', zip, run = RUNS, samp = SAMPLES),
+     bams=expand('results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS)), # When using zip, need to use vectors of equal lengths for all wildcards.
+     per_samp_stats = expand('results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS)), 
      combined_bams=expand('results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam', samp = np.unique(SAMPLES),ref=REFS, mapper=MAPPERS),
      amr_stats=expand('results/stats/{samp}_{mapper}_{ref}_amr.csv', samp=SAMPLES, ref=REFS, mapper=MAPPERS),
      cov_stats=expand('results/stats/{samp}_{mapper}_{ref}_cov_stats.txt', samp=SAMPLES, ref=REFS, mapper=MAPPERS),
-     combined_stats=expand('results/stats/{run}_{samp}_bwa_MTB_ancestor_reference_combined_stats.csv', zip, run = RUNS, samp = SAMPLES),
+     all_sample_stats='results/stats/combined_sample_stats.csv',
      vcfs=expand('results/vars/{samp}_{mapper}_{ref}_{caller}.vcf.gz',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS),
-     vqsr_vcfs=expand('results/vars/{samp}_{mapper}_{ref}_gatk_vqsr.vcf.gz',samp=SAMPLES, ref=REFS, mapper=MAPPERS),
+     vqsr_vcfs=expand('results/vars/{samp}_{mapper}_{ref}_{caller}_vqsr.vcf.gz',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS),
      fastas=expand('results/fasta/{samp}_{mapper}_{ref}_{caller}_{filter}.fa',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS, filter=FILTERS),
      profiles=expand('results/stats/{samp}_{mapper}_{ref}_lineage.csv',samp=SAMPLES, ref=REFS, mapper=MAPPERS)
                
 # Trim reads for quality. 
 rule trim_reads:  
   input: 
-    p1='/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R1_001.fastq.gz', # update inputs so they only include those that exist use zip.
+    p1='/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R1_001.fastq.gz', 
     p2='/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R2_001.fastq.gz'
   output: 
-    trim1='results/trim/{run}_{samp}_trim_1.fq.gz',
-    trim2='results/trim/{run}_{samp}_trim_2.fq.gz'
+    trim1='results/trim/{run}/{samp}_trim_1.fq.gz',
+    trim2='results/trim/{run}/{samp}_trim_2.fq.gz'
   log: 
-    'results/trim/{run}_{samp}_trim_reads.log'
+    'results/trim/{run}/{samp}_trim_reads.log'
   shell:
     'workflow/scripts/trim_reads.sh {input.p1} {input.p2} {output.trim1} {output.trim2} &>> {log}'
 
 # Filter reads taxonomically with Kraken.   
 rule taxonomic_filter:
   input:
-    trim1='results/trim/{run}_{samp}_trim_1.fq.gz',
-    trim2='results/trim/{run}_{samp}_trim_2.fq.gz'
+    trim1='results/trim/{run}/{samp}_trim_1.fq.gz',
+    trim2='results/trim/{run}/{samp}_trim_2.fq.gz'
   output: 
-    kr1='results/trim/{run}_{samp}_trim_kr_1.fq.gz',
-    kr2='results/trim/{run}_{samp}_trim_kr_2.fq.gz',
-    kraken_stats='results/trim/{run}_{samp}_kraken.report'
+    kr1='results/trim/{run}/{samp}_trim_kr_1.fq.gz',
+    kr2='results/trim/{run}/{samp}_trim_kr_2.fq.gz',
+    kraken_stats='results/trim/{run}/{samp}_kraken.report'
   log: 
-    'results/trim/{run}_{samp}_run_kraken.log'
+    'results/trim/{run}/{samp}_kraken.log'
   threads: 8
   shell:
     'workflow/scripts/run_kraken.sh {input.trim1} {input.trim2} {output.kr1} {output.kr2} {output.kraken_stats} &>> {log}'
@@ -76,22 +81,47 @@ rule taxonomic_filter:
 rule map_reads:
   input:
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    kr1='results/trim/{run}_{samp}_trim_kr_1.fq.gz',
-    kr2='results/trim/{run}_{samp}_trim_kr_2.fq.gz'
+    kr1='results/trim/{run}/{samp}_trim_kr_1.fq.gz',
+    kr2='results/trim/{run}/{samp}_trim_kr_2.fq.gz',
   output:
-    bam='results/bams/{run}_{samp}_{mapper}_{ref}_sorted.bam'
+    bam='results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam'
   params:
     mapper='{mapper}'
   log:
-    'results/bams/{run}_{samp}_{mapper}_{ref}_map.log'
+    'results/bams/{run}/{samp}_{mapper}_{ref}_map.log'
   threads: 8
   shell:
     "workflow/scripts/map_reads.sh {input.ref_path} {params.mapper} {input.kr1} {input.kr2} {output.bam} &>> {log}"
 
+# Get coverage & kraken statistics (per sample-run). 
+rule per_samp_stats: 
+  input:
+    ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
+    bam='results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam',
+    kraken_stats = 'results/trim/{run}/{samp}_kraken_stats.csv'
+  output:
+    cov_stats='results/stats/{run}/{samp}_{mapper}_{ref}_cov_stats.txt',
+    combined_stats = 'results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv'
+  log:
+    'results/stats/{run}/{samp}_{mapper}_{ref}_cov_stats.log'
+  shell:    
+    '''
+    workflow/scripts/cov_stats.sh {input.ref_path} {input.bam} {output.cov_stats} &>> {log}
+    paste {input.kraken_stats} <(sed -n '7,8'p {output.cov_stats} ) > {output.combined_stats}
+    '''
+# Combine all per sample-run stats
+rule all_stats:
+  input: 
+    combined_stats = expand('results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS))
+  output: 
+    'results/stats/combined_per_run_sample_stats.csv'
+  shell:
+    "cat {input.combined_stats} > {output}"
+  
 # Combine reads and remove duplicates (per sample).
 rule combine_bams:
   input:
-    bams = lambda wildcards: expand('results/bams/{run}_{{samp}}_bwa_H37Rv_sorted.bam', run=sample_dict[wildcards.samp])
+    bams = lambda wildcards: expand('results/bams/{run}/{{samp}}_bwa_H37Rv_sorted.bam', run=sample_dict[wildcards.samp])
   output: 
     combined_bam = 'results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   log: 
@@ -107,21 +137,18 @@ rule cov_stats:
     bam='results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   output:
     cov_stats='results/stats/{samp}_{mapper}_{ref}_cov_stats.txt'
+  params:
+    prefix='results/stats/{samp}'
   log:
     'results/stats/{samp}_{mapper}_{ref}_cov_stats.log'
-  shell:
-    "workflow/scripts/cov_stats.sh {input.ref_path} {input.bam} {output.cov_stats} &>> {log}"
+  shell:    
+    '''
+    # Coverage summary statistics
+    workflow/scripts/cov_stats.sh {input.ref_path} {input.bam} {output.cov_stats} &>> {log}
+    # Mosdepth coverage along genome (for plotting)
+    mosdepth --by 2000 -Q 30 {params.prefix} {input.bam}
+    '''
 
-# Combine coverage and kraken outputs. 
-rule combine_stats: 
-  input: 
-    cov = 'results/stats/{samp}_{mapper}_{ref}_cov_stats.txt',
-    kraken_stats = 'results/trim/{run}_{samp}_kraken_stats.csv'
-  output: 
-    combined_stats = 'results/stats/{run}_{samp}_{mapper}_{ref}_combined_stats.csv'
-  shell: 
-    "paste {input.kraken_stats} <(sed -n '7,8'p {input.cov} ) > {output.combined_stats}"
-  		
 # Run AMR prediction tool.
 rule predict_amr: 
   input: 

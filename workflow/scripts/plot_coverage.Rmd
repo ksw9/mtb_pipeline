@@ -1,0 +1,56 @@
+---
+title: "Mtb coverage"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '/labs/jandr/walter/tb/mtb/')
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(fs)
+```
+
+```{r read in coverage file}
+cov_file <- 'results/stats/combined_sample_stats.csv'
+df <- read_delim(cov_file,delim = '\t') %>% 
+  filter(!sampl == 'sampl') %>%
+  mutate_at(vars(-sampl), as.numeric)
+
+# Split sample name into run and sample
+df <- df %>% 
+  mutate(sampl = str_remove(sampl,'results/trim/')) %>%
+  separate(sampl, sep = '/', into = c('run','sample'))
+```
+
+```{r plot coverage by run-sample}
+ggplot(df, aes(x = PCT_10X*100, y = MEAN_COVERAGE, color = run)) + 
+  geom_point() + 
+  theme_classic() +
+  scale_color_viridis_d() + 
+  xlab('% >10X coverage') + ylab('Mean coverage')
+```
+```{r number of samples and mean coverage by run}
+df %>% group_by(run) %>%
+  summarize(n = n(),
+    across(2:38, mean, na.rm = TRUE))
+```
+
+```{r samples failing cov thresholds}
+df %>% group_by(run) %>%
+  summarize(n = n(), 
+            failed_samps = length(which(MEAN_COVERAGE < 45 | PCT_10X < .85)))
+```
+
+```{r coverage per-sample (including multiple runs)}
+data_path <- "results/stats/"  
+
+samp_df <- dir_ls(data_path, glob = "*cov_stats.txt") %>% 
+  map_dfr(read_delim, delim = '\t',skip = 6, n_max = 1, .id = 'filename') %>%
+  mutate(sample = str_remove(filename, 'results/stats/'), 
+         sample = str_remove(sample, '_bwa_H37Rv_cov_stats.txt')) %>% relocate(sample)
+
+# List samples we may need to re-run. 
+samp_df %>%
+  filter(MEAN_COVERAGE < 25 | PCT_10X < .85)
+```

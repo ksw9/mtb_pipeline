@@ -1,10 +1,18 @@
-# Mtb bwa/GATK pipeline 
+# Mtb variant calling 
 
-Pipeline for M. tuberculosis variant identification from short-read data.
+Pipeline for *M. tuberculosis* variant identification from short-read data.
 
-## Scripts included. 
+## Usage
+```
+# Navigate to root directory. 
+# Identify files that have not been produced (no run)
+snakemake -np
 
-Directory structure
+# Run snakemake
+snakemake
+```
+
+## Directory structure
 
 ```
 ├── .gitignore
