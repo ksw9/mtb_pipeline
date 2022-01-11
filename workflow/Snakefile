@@ -9,15 +9,8 @@ from collections import defaultdict
 # Define config file. Stores sample names and other things.
 configfile: "config/config.yaml"
 
-# List of parameters - move to config file
-REFS = ['H37Rv']
-MAPPERS= ['bwa']
-CALLERS=['gatk']
-REF_DIR= ['/labs/jandr/walter/tb/data/refs/']
-FILTERS = ['qfilt','vqsrfilt']
-
 # Define samples: 
-RUNS, SAMPLES = glob_wildcards("/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R1_001.fastq.gz")
+RUNS, SAMPLES = glob_wildcards(config['fastq_dir'] + "{run}/{samp}" + config['fastq1_suffix'])
 
 # Create sample dictionary so that each sample (key) has list of runs (values) associated with it.
 sample_dict = {}
@@ -31,64 +24,65 @@ wildcard_constraints:
   filter="[a-zA-Z2]+",
   run = '|'.join([re.escape(x) for x in RUNS]),
   samp = '|'.join([re.escape(x) for x in SAMPLES]),
-  ref = '|'.join([re.escape(x) for x in REFS])
+  ref = '|'.join([re.escape(x) for x in config['ref']])
     
 # Define a rule for running the complete pipeline. 
 rule all:
   input:
-     trim = expand(['results/trim/{run}/{samp}_trim_1.fq.gz'], zip, run = RUNS, samp = SAMPLES),
-     kraken=expand('results/trim/{run}/{samp}_trim_kr_1.fq.gz', zip, run = RUNS, samp = SAMPLES),
-     bams=expand('results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS)), # When using zip, need to use vectors of equal lengths for all wildcards.
-     per_samp_stats = expand('results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS)), 
-     combined_bams=expand('results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam', samp = np.unique(SAMPLES),ref=REFS, mapper=MAPPERS),
-     amr_stats=expand('results/stats/{samp}_{mapper}_{ref}_amr.csv', samp=SAMPLES, ref=REFS, mapper=MAPPERS),
-     cov_stats=expand('results/stats/{samp}_{mapper}_{ref}_cov_stats.txt', samp=SAMPLES, ref=REFS, mapper=MAPPERS),
-     all_sample_stats='results/stats/combined_sample_stats.csv',
-     vcfs=expand('results/vars/{samp}_{mapper}_{ref}_{caller}.vcf.gz',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS),
-     vqsr_vcfs=expand('results/vars/{samp}_{mapper}_{ref}_{caller}_vqsr.vcf.gz',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS),
-     fastas=expand('results/fasta/{samp}_{mapper}_{ref}_{caller}_{filter}.fa',samp=SAMPLES, ref=REFS, mapper=MAPPERS, caller = CALLERS, filter=FILTERS),
-     profiles=expand('results/stats/{samp}_{mapper}_{ref}_lineage.csv',samp=SAMPLES, ref=REFS, mapper=MAPPERS)
+     trim = expand(['results/{samp}/{run}/trim/{samp}_trim_1.fq.gz'], zip, run = RUNS, samp = SAMPLES),
+     kraken=expand('results/{samp}/{run}/kraken/{samp}_trim_kr_1.fq.gz', zip, run = RUNS, samp = SAMPLES),
+     bams=expand('results/{samp}/{run}/bams/{samp}_{mapper}_{ref}_sorted.bam', zip, run = RUNS, samp = SAMPLES, ref = config['ref']*len(RUNS), mapper = config['mapper']*len(RUNS)), # When using zip, need to use vectors of equal lengths for all wildcards.
+     per_samp_run_stats = expand('results/{samp}/{run}/stats/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = config['ref']*len(RUNS), mapper = config['mapper']*len(RUNS)),          
+     combined_bams=expand('results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam', samp = np.unique(SAMPLES),ref=config['ref'], mapper=config['mapper']),
+     amr_stats=expand('results/{samp}/stats/{samp}_{mapper}_{ref}_amr.csv', samp=SAMPLES, ref=config['ref'], mapper=config['mapper']),
+     cov_stats=expand('results/{samp}/stats/{samp}_{mapper}_{ref}_cov_stats.txt', samp=SAMPLES, ref=config['ref'], mapper=config['mapper']),
+     all_sample_stats='results/stats/combined_per_run_sample_stats.csv',
+     vcfs=expand('results/{samp}/vars/{samp}_{mapper}_{ref}_{caller}.vcf.gz',samp=SAMPLES, ref=config['ref'], mapper=config['mapper'], caller = config['caller']),
+     ann_vcfs=expand('results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_ann.vcf.gz', samp=SAMPLES, ref=config['ref'], mapper=config['mapper'], caller = config['caller']),
+     fastas=expand('results/{samp}/fasta/{samp}_{mapper}_{ref}_{caller}_{filter}.fa',samp=SAMPLES, ref=config['ref'], mapper=config['mapper'], caller = config['caller'], filter=config['filter']),
+     profiles=expand('results/{samp}/stats/{samp}_{mapper}_{ref}_lineage.csv',samp=SAMPLES, ref=config['ref'], mapper=config['mapper'])
                
 # Trim reads for quality. 
 rule trim_reads:  
   input: 
-    p1='/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R1_001.fastq.gz', 
-    p2='/labs/jandr/walter/tb/data/Stanford/{run}/{samp}_L001_R2_001.fastq.gz'
+    p1= config['fastq_dir'] + '{run}/{samp}' + config['fastq1_suffix'], 
+    p2= config['fastq_dir'] + '{run}/{samp}' + config['fastq2_suffix']
   output: 
-    trim1='results/trim/{run}/{samp}_trim_1.fq.gz',
-    trim2='results/trim/{run}/{samp}_trim_2.fq.gz'
+    trim1='results/{samp}/{run}/trim/{samp}_trim_1.fq.gz',
+    trim2='results/{samp}/{run}/trim/{samp}_trim_2.fq.gz'
   log: 
-    'results/trim/{run}/{samp}_trim_reads.log'
+    'results/{samp}/{run}/trim/{samp}_trim_reads.log'
   shell:
     'workflow/scripts/trim_reads.sh {input.p1} {input.p2} {output.trim1} {output.trim2} &>> {log}'
 
-# Filter reads taxonomically with Kraken.   
+# # Filter reads taxonomically with Kraken.   
 rule taxonomic_filter:
   input:
-    trim1='results/trim/{run}/{samp}_trim_1.fq.gz',
-    trim2='results/trim/{run}/{samp}_trim_2.fq.gz'
+    trim1='results/{samp}/{run}/trim/{samp}_trim_1.fq.gz',
+    trim2='results/{samp}/{run}/trim/{samp}_trim_2.fq.gz'
   output: 
-    kr1='results/trim/{run}/{samp}_trim_kr_1.fq.gz',
-    kr2='results/trim/{run}/{samp}_trim_kr_2.fq.gz',
-    kraken_stats='results/trim/{run}/{samp}_kraken.report'
+    kr1='results/{samp}/{run}/kraken/{samp}_trim_kr_1.fq.gz',
+    kr2='results/{samp}/{run}/kraken/{samp}_trim_kr_2.fq.gz',
+    kraken_report='results/{samp}/{run}/kraken/{samp}_kraken.report',
+    kraken_stats = 'results/{samp}/{run}/kraken/{samp}_kraken_stats.csv'
   log: 
-    'results/trim/{run}/{samp}_kraken.log'
+    'results/{samp}/{run}/kraken/{samp}_kraken.log'
   threads: 8
   shell:
-    'workflow/scripts/run_kraken.sh {input.trim1} {input.trim2} {output.kr1} {output.kr2} {output.kraken_stats} &>> {log}'
+    'workflow/scripts/run_kraken.sh {input.trim1} {input.trim2} {output.kr1} {output.kr2} {output.kraken_report} &>> {log}'
 
 # Map reads.
 rule map_reads:
   input:
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    kr1='results/trim/{run}/{samp}_trim_kr_1.fq.gz',
-    kr2='results/trim/{run}/{samp}_trim_kr_2.fq.gz',
+    kr1='results/{samp}/{run}/kraken/{samp}_trim_kr_1.fq.gz',
+    kr2='results/{samp}/{run}/kraken/{samp}_trim_kr_2.fq.gz'
   output:
-    bam='results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam'
+    bam='results/{samp}/{run}/bams/{samp}_{mapper}_{ref}_sorted.bam'
   params:
     mapper='{mapper}'
   log:
-    'results/bams/{run}/{samp}_{mapper}_{ref}_map.log'
+    'results/{samp}/{run}/bams/{samp}_{mapper}_{ref}_map.log'
   threads: 8
   shell:
     "workflow/scripts/map_reads.sh {input.ref_path} {params.mapper} {input.kr1} {input.kr2} {output.bam} &>> {log}"
@@ -97,11 +91,11 @@ rule map_reads:
 rule per_samp_stats: 
   input:
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    bam='results/bams/{run}/{samp}_{mapper}_{ref}_sorted.bam',
-    kraken_stats = 'results/trim/{run}/{samp}_kraken_stats.csv'
+    bam='results/{samp}/{run}/bams/{samp}_{mapper}_{ref}_sorted.bam',
+    kraken_stats = 'results/{samp}/{run}/kraken/{samp}_kraken_stats.csv'
   output:
-    cov_stats='results/stats/{run}/{samp}_{mapper}_{ref}_cov_stats.txt',
-    combined_stats = 'results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv'
+    cov_stats='results/{samp}/{run}/stats/{samp}_{mapper}_{ref}_cov_stats.txt',
+    combined_stats = 'results/{samp}/{run}/stats/{samp}_{mapper}_{ref}_combined_stats.csv'
   log:
     'results/stats/{run}/{samp}_{mapper}_{ref}_cov_stats.log'
   shell:    
@@ -112,7 +106,7 @@ rule per_samp_stats:
 # Combine all per sample-run stats
 rule all_stats:
   input: 
-    combined_stats = expand('results/stats/{run}/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = REFS*len(RUNS), mapper = MAPPERS*len(RUNS))
+    combined_stats = expand('results/{samp}/{run}/stats/{samp}_{mapper}_{ref}_combined_stats.csv', zip, run = RUNS, samp = SAMPLES, ref = config['ref']*len(RUNS), mapper = config['mapper']*len(RUNS))
   output: 
     'results/stats/combined_per_run_sample_stats.csv'
   shell:
@@ -121,106 +115,102 @@ rule all_stats:
 # Combine reads and remove duplicates (per sample).
 rule combine_bams:
   input:
-    bams = lambda wildcards: expand('results/bams/{run}/{{samp}}_bwa_H37Rv_sorted.bam', run=sample_dict[wildcards.samp])
+    bams = lambda wildcards: expand('results/{samp}/{run}/bams/{samp}_{mapper}_{ref}_sorted.bam', run=sample_dict[wildcards.samp], 
+        allow_missing=True)
   output: 
-    combined_bam = 'results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
+    combined_bam = 'results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   log: 
-     'results/bams/{samp}_{mapper}_{ref}_merge_bams.log'
+     'results/{samp}/bams/{samp}_{mapper}_{ref}_merge_bams.log'
+  params:
+    tmp_dir = 'results/{samp}/bams/'
   threads: 8
   shell:
-    "sambamba markdup -r -p -t {threads} {input.bams} {output.combined_bam}"
+    "sambamba markdup -r -t {threads} --tmpdir={params.tmp_dir} {input.bams} {output.combined_bam}"
 
 # Get coverage statistics (per merged bam). 
 rule cov_stats: 
   input:
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    bam='results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
+    combined_bam = 'results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   output:
-    cov_stats='results/stats/{samp}_{mapper}_{ref}_cov_stats.txt'
+    cov_stats='results/{samp}/stats/{samp}_{mapper}_{ref}_cov_stats.txt'
   params:
-    prefix='results/stats/{samp}'
+    prefix='results/{samp}/stats/{samp}'
   log:
-    'results/stats/{samp}_{mapper}_{ref}_cov_stats.log'
+    'results/{samp}/stats/{samp}_{mapper}_{ref}_cov_stats.log'
   shell:    
     '''
     # Coverage summary statistics
-    workflow/scripts/cov_stats.sh {input.ref_path} {input.bam} {output.cov_stats} &>> {log}
+    workflow/scripts/cov_stats.sh {input.ref_path} {input.combined_bam} {output.cov_stats} &>> {log}
     # Mosdepth coverage along genome (for plotting)
-    mosdepth --by 2000 -Q 30 {params.prefix} {input.bam}
+    mosdepth --by 2000 -Q 30 {params.prefix} {input.combined_bam}
     '''
 
 # Run AMR prediction tool.
 rule predict_amr: 
   input: 
-    bam='results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
+    combined_bam = 'results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   output:
-    amr_out='results/stats/{samp}_{mapper}_{ref}_amr.csv'   
+    amr_out='results/{samp}/stats/{samp}_{mapper}_{ref}_amr.csv'   
   log:
-    'results/stats/{samp}_{mapper}_{ref}_amr.log' 
+    'results/{samp}/stats/{samp}_{mapper}_{ref}_amr.log' 
   shell: 
-    "workflow/scripts/mykrobe_predict.sh {input.bam} {output.amr_out} &>> {log}"
+    "workflow/scripts/mykrobe_predict.sh {input.combined_bam} {output.amr_out} &>> {log}"
 
 # Call variants with GATK.
 rule gatk_call:
   input: 
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    bam='results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
+    combined_bam = 'results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   params:
     ploidy='1'
   output: 
-    vcf='results/vars/{samp}_{mapper}_{ref}_gatk.vcf.gz'
+    vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk.vcf.gz'
   log:
-    'results/vars/{samp}_{mapper}_{ref}_gatk.log' 
+    'results/{samp}/vars/{samp}_{mapper}_{ref}_gatk.log' 
   shell: 
-    "workflow/scripts/call_vars_gatk.sh {input.ref_path} {input.bam} {params.ploidy} {output.vcf} &>> {log}"
+    "workflow/scripts/call_vars_gatk.sh {input.ref_path} {input.combined_bam} {params.ploidy} {output.vcf} &>> {log}"
 
-# VQSR
-rule vqsr:
+# Annotate snps.
+rule annotate_snps: 
   input:
-    ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    vcf='results/vars/{samp}_{mapper}_{ref}_gatk.vcf.gz'
+    vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk.vcf.gz'
   log: 
-    'results/vars/{samp}_{mapper}_{ref}_gatk_vqsr.log'
+    'results/{samp}/vars/{samp}_{mapper}_{ref}_annotate_snps.log'
   output:
-    vqsr_vcf='results/vars/{samp}_{mapper}_{ref}_gatk_vqsr.vcf.gz'
-  shell:
-    'workflow/scripts/vqsr.sh {input.ref_path} {input.vcf} {output.vqsr_vcf}  &>> {log} '
-
-# Filter VQSR variants.     
-rule vqsr_filter:
-  input:
-    vqsr_vcf='results/vars/{samp}_{mapper}_{ref}_gatk_vqsr.vcf.gz'
-  log: 
-    'results/vars/{samp}_{mapper}_{ref}_gatk_vqsrfilt.log'
-  output:
-    vfilt_vcf='results/vars/{samp}_{mapper}_{ref}_gatk_vqsrfilt.vcf.gz'
+    rename_vcf=temp('results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_rename.vcf.gz'),
+    tmp_vcf=temp('results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_tmp.vcf.gz'),
+    ann_vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_ann.vcf.gz'
+  params: 
+    bed=config['bed_path'],
+    vcf_header=config['vcf_header']
   shell:
     '''
+    # Rename Chromosome to be consistent with snpEff/Ensembl genomes.
+    zcat {input.vcf}| sed 's/NC_000962.3/Chromosome/g' | bgzip > {output.rename_vcf}
+    tabix {output.rename_vcf}
 
-    # Filter VQSR
-    bcftools filter -e 'FILTER == "VQSRTrancheSNP99.00to100.00" ' --set-GTs '.' {input.vqsr_vcf} -O z -o {output.vfilt_vcf}
+    # Run snpEff
+    java -jar -Xmx8g {config[snpeff]} eff {config[snpeff_db]} {output.rename_vcf} -dataDir {config[snpeff_datapath]} -noStats -no-downstream -no-upstream -canon > {output.tmp_vcf}
 
-    # Index filtered VCF.
-    tabix -f -p vcf {output.vfilt_vcf}
+    # Also use bed file to annotate vcf
+    bcftools annotate -a {params.bed} -h {params.vcf_header} -c CHROM,FROM,TO,FORMAT/PPE {output.tmp_vcf} > {output.ann_vcf}
 
-    # Print out stats to log file. 
-    bcftools stats {output.vfilt_vcf} &>> {log}
+    '''
     
-    '''
-
 # Hard filter variants.     
 rule hard_filter:
   input:
-    vcf='results/vars/{samp}_{mapper}_{ref}_gatk.vcf.gz'
+    ann_vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_ann.vcf.gz'
   log: 
-    'results/vars/{samp}_{mapper}_{ref}_gatk_qfilt_stats.log'
+    'results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_qfilt_stats.log'
   output:
-    filt_vcf='results/vars/{samp}_{mapper}_{ref}_gatk_qfilt.vcf.gz'
+    filt_vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_qfilt.vcf.gz'
   shell:
     '''
     
    # Filter VQSR
-    bcftools filter -e "QUAL < 40.0 | FORMAT/DP < 10" --set-GTs '.' {input.vcf} -O z -o {output.filt_vcf}
+    bcftools filter -e "QUAL < 40.0 | FORMAT/DP < 10" --set-GTs '.' {input.ann_vcf} -O z -o {output.filt_vcf}
 
     # Index filtered VCF.
     tabix -f -p vcf {output.filt_vcf}
@@ -234,38 +224,36 @@ rule hard_filter:
 rule vcf_to_fasta:
   input: 
     ref_path='/labs/jandr/walter/tb/data/refs/{ref}.fa',
-    vcf='results/vars/{samp}_{mapper}_{ref}_gatk_{filt}.vcf.gz'
+    filt_vcf='results/{samp}/vars/{samp}_{mapper}_{ref}_gatk_qfilt.vcf.gz'
   params:
     sample_name = "{samp}",
-    bed='/labs/jandr/walter/varcal/data/refs/ppe_gagneux_0based_fmt.bed'
+    bed=config['bed_path']
   output:
-    fasta='results/fasta/{samp}_{mapper}_{ref}_gatk_{filt}.fa'
+    fasta='results/{samp}/fasta/{samp}_{mapper}_{ref}_gatk_{filt}.fa'
   log: 
-   'results/fasta/{samp}_{mapper}_{ref}_gatk_{filt}.log'
+   'results/{samp}/fasta/{samp}_{mapper}_{ref}_gatk_{filt}.log'
   shell:
     '''
-    workflow/scripts/vcf2fasta.sh {input.ref_path} {input.vcf} {params.sample_name} {params.bed} {output.fasta}    
+    workflow/scripts/vcf2fasta.sh {input.ref_path} {input.filt_vcf} {params.sample_name} {params.bed} {output.fasta}    
 	'''    
 
 # TB Profiler to assign sub-lineage.
 rule tb_profiler: 
   input: 
-    bam='results/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam',
-    dir='results/stats/'
+    combined_bam = 'results/{samp}/bams/{samp}_{mapper}_{ref}.merged.rmdup.bam'
   params: 
-    tmp_file='results/stats/results/{samp}.results.csv',
-    tmp_dir='results/stats/results/', 
+    tmp_file='results/{samp}/stats/results/{samp}.results.csv',
+    outdir='results/{samp}/stats/', 
     samp='{samp}'
   output:
-    profile='results/stats/{samp}_{mapper}_{ref}_lineage.csv'   
+    profile='results/{samp}/stats/{samp}_{mapper}_{ref}_lineage.csv'   
   log:
-    'results/stats/{samp}_{mapper}_{ref}_lineage.log' 
+    'results/{samp}/stats/{samp}_{mapper}_{ref}_lineage.log' 
   shell: 
     """
-    tb-profiler profile --no_delly --bam {input.bam} --prefix {params.samp} --dir {input.dir} --external_db /labs/jandr/walter/repos/tbdb/tbdb --csv &>> {log}
+    tb-profiler profile --no_delly --bam {input.combined_bam} --prefix {params.samp} --dir {params.outdir} \
+    --external_db /labs/jandr/walter/repos/tbdb/tbdb --csv &>> {log}
     mv {params.tmp_file} {output.profile}
-    rm -rf {params.tmp_dir}
-    
     """
 
 # Print out if success

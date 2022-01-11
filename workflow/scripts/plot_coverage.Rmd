@@ -9,6 +9,13 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
 library(fs)
+library(ggsci)
+library(ape)
+library(harrietr)
+#save.image('plot_coverage.RData')
+#load('plot_coverage.RData')
+
+source(file = '/labs/jandr/walter/lambda/scripts/isnv_functions.R')
 ```
 
 ```{r read in coverage file}
@@ -30,6 +37,7 @@ ggplot(df, aes(x = PCT_10X*100, y = MEAN_COVERAGE, color = run)) +
   scale_color_viridis_d() + 
   xlab('% >10X coverage') + ylab('Mean coverage')
 ```
+
 ```{r number of samples and mean coverage by run}
 df %>% group_by(run) %>%
   summarize(n = n(),
@@ -53,4 +61,132 @@ samp_df <- dir_ls(data_path, glob = "*cov_stats.txt") %>%
 # List samples we may need to re-run. 
 samp_df %>%
   filter(MEAN_COVERAGE < 25 | PCT_10X < .85)
+```
+
+```{r environmental vcfs}
+library(vcfR)
+working_dir = '/labs/jandr/walter/tb/mtb/enviro/per_samp/'
+
+# List VCF files to read in. 
+var_files <- dir(path = working_dir, glob2rx('*vcf.gz'), full.names = TRUE)
+
+# Function to read in VCF, convert to tibble and bind columns for the gt and fix slots.
+vcf_to_tbl <- function(input_vcf){
+  tmp = vcfR2tidy(read.vcfR(input_vcf))
+  tmp_tbl = cbind(tmp$fix,tmp$gt)
+  return(tmp_tbl)
+}
+
+# Read in all vcf files.
+var_df <- purrr::map_dfr(var_files, 
+  ~vcf_to_tbl(.x)) %>%
+  mutate(Sample = str_remove(Indiv, '_trim_kr_1')) %>%
+  separate(gt_AD, sep =',', into = c('AD1','AD2')) %>%
+  select(!starts_with('ChromKey') & !POS...28) %>% rename(POS = POS...3)
+
+# Add maf
+var_df <- var_df %>%
+  mutate_at(c('AD1','AD2'), as.integer) %>%
+  rowwise() %>%
+  mutate(maf = min(AD1,AD2)/DP)
+
+# Number of iSNVs per sample. H37Rv has 0 biallelic sites.
+var_df %>%
+  group_by(Sample) %>%
+  summarize(n = length(which(AD1 >=5 & AD2 >=5)))
+
+```
+```{r shared isnvs}
+# Apply function to determine probabilities
+alt_freq_thresholds <- c(.01,.02,.05, seq(.1,.4,by = .1))
+length(alt_freq_thresholds)
+
+# Add column so that pairwise function works
+vars_all <- var_df %>% mutate(GFF_FEATURE = NA)
+system.time(shared_df <- map(alt_freq_thresholds,calc_pairwise_overlaps) %>% map_dfr(~ as.data.frame(.)))
+dim(shared_df) # 54 
+shared_df
+
+# Add information about individual
+pair_df <- shared_df %>%
+  mutate(name1 = str_remove(name1, '_S.+'),
+         name2 = str_remove(name2, '_S.+')) %>%
+  separate(name1, sep = '-', into = c('cell1','sample_type1'), extra = 'merge', remove = FALSE) %>%
+  separate(name2, sep = '-', into = c('cell2','sample_type2'), extra = 'merge', remove = FALSE) %>%
+  mutate(pair_id = case_when(name1 == name2 ~ 'Sample',
+                               cell1 == cell2 ~ 'Cell',
+                               TRUE ~ 'Outside cell'))
+pair_df
+table(pair_df$pair_id)
+
+# Summarize by group type and frequency threshold.
+library(plyr)
+pair_df_summary <- summarySE(pair_df, measurevar='num_shared', groupvars=c('threshold','pair_id'))
+pair_df_summary <- pair_df_summary %>% mutate(pair_id = factor(pair_id, levels = c('Sample','Cell','Outside cell'))) %>%
+  mutate(threshold = threshold * 100)
+
+# Plot curves. 
+p0 <- pair_df_summary %>% 
+  ggplot(aes(x = threshold, y = num_shared, col = pair_id, group = pair_id))+
+  geom_errorbar(aes(ymin=num_shared-ci, ymax=num_shared+ci), width=.02, position=position_dodge(width=0.1)) +
+  geom_point(position=position_dodge(width=0.1)) + theme_classic() + 
+  xlab('Minor allele frequency threshold') + ylab('Shared iSNVs') +
+  scale_color_npg(name = 'Comparison type') + scale_x_log10()
+
+p0
+
+
+# Also look at TB profiler output - multiple lineages identified? 
+# Add SNP Eff to look at location of shared iSNVs. 
+# For each sample, plot historam of mafs. 
+p1 <- var_df %>%
+  group_by(Sample) %>%
+  filter(maf > 0) %>%
+  ggplot(aes(x = maf)) +
+  geom_histogram() + 
+  facet_wrap(~Sample, scales = 'free') + 
+  theme_classic() + 
+  xlab('Minor allele frequency')
+p1
+```
+```{r pairwise differences}
+fasta_file = '/labs/jandr/walter/tb/mtb/enviro/enviro_msa_snps.fa'
+  
+# Read in fasta, get pairwise distances
+f <- read.dna(file = fasta_file, format = 'fasta')
+d <- dist.dna(f, model = 'N', as.matrix = TRUE, pairwise.deletion = FALSE)  
+
+d <- d %>% as.data.frame() %>%
+  rownames_to_column('iso1') %>% as_tibble() %>%  
+  pivot_longer(cols = 2:12, names_to = 'iso2', values_to = 'dist') %>%
+  filter(!iso1==iso2) %>%
+  mutate(name1 = str_remove(iso1, '_S.+'),
+         name2 = str_remove(iso2, '_S.+')) %>%
+  separate(name1, sep = '-', into = c('cell1','sample_type1'), extra = 'merge', remove = FALSE) %>%
+  separate(name2, sep = '-', into = c('cell2','sample_type2'), extra = 'merge', remove = FALSE) %>%
+  mutate(pair_id = case_when(name1 == 'NC_000962.3' | name2 == 'NC_000962.3' ~ 'Reference',
+                             name1 == name2 ~ 'Sample',
+                               cell1 == cell2 ~ 'Cell',
+                               TRUE ~ 'Outside cell'))
+
+# Plot distances 
+d %>%
+  ggplot(aes(x = dist, y = cell1, color = cell2)) +
+  geom_point() + 
+  coord_flip() + 
+  facet_wrap(~pair_id) + 
+  theme_classic() + xlab('Cell') + ylab('Pairwise SNP distance')
+
+# Look at minor allele frequencies
+d %>% 
+  filter(cell1 == '10561' & cell2 == '10561')
+
+# Compare allele frequencies for: '10561-7352-culture_S241' vs. '10561-BC_S61'
+d1 <- var_df %>%
+  filter(Sample %in% c('10561-7352-culture_S24'))
+d2 <- var_df %>%
+  filter(Sample %in% c('10561-BC_S6'))           
+d1 %>% left_join(d2, by = 'POS') %>%
+  ggplot(aes(x = maf.x,y = maf.y)) +
+  geom_point()
 ```

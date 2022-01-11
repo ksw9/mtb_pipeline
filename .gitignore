@@ -1,5 +1,6 @@
 # Ignore results directory
 results/
+process/
 
 # Ignore logs and tmp/test files
 test/
@@ -9,3 +10,4 @@ runs/
 mykrobe/
 .snakemake/
 .token
+slurm*
